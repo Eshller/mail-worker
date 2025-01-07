@@ -1,0 +1,17 @@
+{
+  "name": "mailer-worker",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "bullmq": "^5.34.7",
+    "dotenv": "^16.4.7",
+    "ioredis": "^5.4.2",
+    "nodemailer": "^6.9.16"
+  }
+}
