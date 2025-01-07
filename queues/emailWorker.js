@@ -24,6 +24,13 @@ const transporter = nodemailer.createTransport({
     }
 });
 
+// Redis connection setup
+const redisUrl = process.env.REDIS_URL || 'rediss://red-ctuj9lggph6c73eran50:vSHfDDccnTpaeXHLkfvlRq0bxC9GZveT@singapore-redis.render.com:6379';
+const connection = new Redis(redisUrl, {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+});
+
 // Email sending function
 const sendEmail = async (to, subject, content, html) => {
     console.log("Sending Email to ", to);
@@ -43,27 +50,33 @@ const sendEmail = async (to, subject, content, html) => {
     }
 };
 
-// Redis connection setup
-const redisUrl = process.env.REDIS_URL || 'rediss://red-ctuj9lggph6c73eran50:vSHfDDccnTpaeXHLkfvlRq0bxC9GZveT@singapore-redis.render.com:6379';
-const connection = new Redis(redisUrl, {
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
+const emailQueue = new Queue("emailQueue", {
+    connection,
+    defaultJobOptions: {
+        attempts: 3,
+        backoff: {
+            type: 'exponential',
+            delay: 1000,
+        },
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 200 },
+    },
 });
-
-const emailQueue = new Queue("emailQueue", { connection });
 
 // Worker setup outside of routes
 const emailWorker = new Worker("emailQueue", async (job) => {
-    console.log("Email Worker Started");
+    console.log(`Processing job ${job.id}`);
     const { recipients, subject, content } = job.data;
     const results = [];
+    let processed = 0;
 
     if (Array.isArray(recipients) && recipients.length > 0) {
         for (const recipient of recipients) {
             try {
                 console.log("Sending Email to ", recipient);
-                const info = await sendEmail(recipient, subject, content, content);
+                // const info = await sendEmail(recipient, subject, content, content);
                 results.push({ to: recipient, success: true, info });
+                processed++;
             } catch (error) {
                 console.error('Error sending email: ', error);
                 results.push({ to: recipient, success: false, error: error.message });
@@ -83,7 +96,16 @@ const emailWorker = new Worker("emailQueue", async (job) => {
     }
     console.log('Bulk email results:', results);
     return results;
-}, { connection, limiter: { max: 10, duration: 1000 } });
+}, { connection, limiter: { max: 10, duration: 1000 }, concurrency: 10 });
+
+// Error handling for worker
+emailWorker.on('failed', (job, err) => {
+    console.error(`Job ${job.id} failed:`, err);
+});
+
+emailWorker.on('completed', (job, result) => {
+    console.log(`Job ${job.id} completed:`, result);
+});
 
 console.log('Worker is running...');
 
@@ -96,16 +118,37 @@ app.post('/send-email', async (req, res) => {
             return res.json({ success: false, message: 'Recipients not provided' });
         }
 
-        const jobs = recipients?.map((to) => ({
-            name: 'send-email',
-            data: { to, subject, content },
-        }));
-        const emailJob = await emailQueue.addBulk(jobs);
+        if (!subject || !content) {
+            return res.status(400).json({ success: false, message: 'Subject and content are required' });
+        }
+        // const jobs = recipients?.map((to) => ({
+        //     name: 'send-email',
+        //     data: { to, subject, content },
+        // }));
+        // const emailJob = await emailQueue.addBulk(jobs);
 
-        return res.json({ success: true, message: 'Job added to the queue', jobId: emailJob.id });
+        let jobs;
+        if (Array.isArray(recipients)) {
+            jobs = await emailQueue.addBulk(
+                recipients.map(to => ({
+                    name: `email-to-${to}`,
+                    data: { to, subject, content },
+                    opts: { priority: 1 }
+                }))
+            );
+        } else {
+            const job = await emailQueue.add('single-email', {
+                to: recipients,
+                subject,
+                content
+            });
+            jobs = [job];
+        }
+
+        return res.json({ success: true, message: 'Job added to the queue', jobIds: jobs.map(job => job.id) });
     } catch (error) {
         console.error('Error adding email job:', error);
-        return res.json({ success: false, message: 'Error adding email job' });
+        return res.json({ success: false, message: 'Error adding email job', error: error.message });
     }
 });
 
@@ -118,17 +161,61 @@ app.get('/job-progress/:jobId', async (req, res) => {
         if (!job) {
             return res.json({ success: false, message: 'Job not found' });
         }
+        const state = await job.getState();
+        const progress = job.progress;
+        const result = job.returnvalue;
+        const failReason = job.failedReason;
 
         return res.json({
             success: true,
             jobId: job.id,
-            progress: job.progress,
-            status: job.getState(), // Can return queued, active, completed, failed
-            result: job.returnvalue, // The result of the job after completion
+            state,
+            progress,
+            result,
+            failReason,
+            processedOn: job.processedOn,
+            finishedOn: job.finishedOn,
+            attempts: job.attemptsMade
         });
     } catch (error) {
         console.error('Error fetching job progress:', error);
-        return res.json({ success: false, message: 'Error fetching job progress' });
+        return res.json({ success: false, message: 'Error fetching job progress', error: error.message });
+    }
+});
+
+app.get('/queue-progress', async (req, res) => {
+    try {
+        const jobCounts = await emailQueue.getJobCounts(
+            'waiting',
+            'active',
+            'completed',
+            'failed',
+            'delayed'
+        );
+
+        const jobs = await emailQueue.getJobs(['active', 'waiting']);
+        let totalProgress = 0;
+        jobs.forEach(job => {
+            totalProgress += job.progress || 0;
+        });
+
+        const averageProgress = jobs.length > 0 ?
+            Math.floor(totalProgress / jobs.length) : 100;
+
+        return res.json({
+            success: true,
+            counts: jobCounts,
+            activeJobsCount: jobs.length,
+            averageProgress,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('Error fetching queue progress:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Error fetching queue progress',
+            error: error.message
+        });
     }
 });
 
