@@ -74,7 +74,7 @@ const emailWorker = new Worker("emailQueue", async (job) => {
         for (const recipient of recipients) {
             try {
                 console.log("Sending Email to ", recipient);
-                // const info = await sendEmail(recipient, subject, content, content);
+                const info = await sendEmail(recipient, subject, content, content);
                 results.push({ to: recipient, success: true, info });
                 processed++;
             } catch (error) {
