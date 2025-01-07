@@ -11,7 +11,9 @@
   "description": "",
   "dependencies": {
     "bullmq": "^5.34.7",
+    "cors": "^2.8.5",
     "dotenv": "^16.4.7",
+    "express": "^4.21.2",
     "ioredis": "^5.4.2",
     "nodemailer": "^6.9.16"
   }
