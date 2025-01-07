@@ -12,7 +12,6 @@ const transporter = nodemailer.createTransport({
         pass: process.env.EMAIL_PASSWORD
     }
 });
-
 // Email sending function
 const sendEmail = async (to, subject, content, html) => {
     console.log("Sending Email to ", to);
@@ -41,36 +40,32 @@ const emailWorker = new Worker("emailQueue", async (job) => {
     console.log("Email Worker Started");
     const { recipients, subject, content } = job.data;
     const results = [];
-    try {
-        if (!Array.isArray(recipients) || recipients.length === 0) {
-            for (const recipient of recipients) {
-                try {
-                    const info = await sendEmail(recipient, subject, content, content);
-                    results.push({ to, success: true, info });
-                } catch (error) {
-                    console.error('Error sending email: ', error);
-                    results.push({ to, success: false, error: error.message });
-                }
-            }
-            console.log('Bulk email results:', results);
-            return results;
-        } else {
+
+    if (Array.isArray(recipients) && recipients.length > 0) {
+        for (const recipient of recipients) {
             try {
-                const info = await sendEmail(job.data.to, subject, content, content);
-                results.push({ to: job.data.to, success: true, info });
+                console.log("Sending Email to ", recipient);
+                const info = await sendEmail(recipient, subject, content, content);
+                results.push({ to, success: true, info });
             } catch (error) {
                 console.error('Error sending email: ', error);
-                results.push({ to: job.data.to, success: false, error: error.message });
-                throw error;
+                results.push({ to, success: false, error: error.message });
             }
         }
-    } catch (error) {
-        console.error('Error sending email: ', error);
-        results.push({ to: job.data.to, success: false, error: error.message });
-        throw error;
+        console.log('Bulk email results:', results);
+        return results;
+    } else {
+        try {
+            const info = await sendEmail(job.data.to, subject, content, content);
+            results.push({ to: job.data.to, success: true, info });
+        } catch (error) {
+            console.error('Error sending email: ', error);
+            results.push({ to: job.data.to, success: false, error: error.message });
+            throw error;
+        }
     }
     console.log('Bulk email results:', results);
     return results;
-}, { connection, limiter: { groupKey: 'emailQueue', max: 10, duration: 1000 } });
+}, { connection, limiter: { max: 10, duration: 1000 } });
 
 module.exports = emailWorker;
