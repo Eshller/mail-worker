@@ -112,10 +112,14 @@ console.log('Worker is running...');
 // API route to add jobs to the queue
 app.post('/send-email', async (req, res) => {
     try {
-        const { recipients, subject, content } = req.body;
+        const { recipients, subject, content, name } = req.body;
 
         if (!Array.isArray(recipients) || recipients.length === 0) {
             return res.json({ success: false, message: 'Recipients not provided' });
+        }
+
+        if (!Array.isArray(name) || name.length === 0) {
+            return res.json({ success: false, message: 'Name not provided' });
         }
 
         if (!subject || !content) {
@@ -127,25 +131,48 @@ app.post('/send-email', async (req, res) => {
         // }));
         // const emailJob = await emailQueue.addBulk(jobs);
 
-        let jobs;
+        // console.log(content.replace('[Recipient Name]', name[0]));
+        // let jobs;
         if (Array.isArray(recipients)) {
-            jobs = await emailQueue.addBulk(
-                recipients.map(to => ({
-                    name: `email-to-${to}`,
-                    data: { to, subject, content },
-                    opts: { priority: 1 }
-                }))
-            );
+            const jobs = recipients.map((to, index) => ({
+                name: `email-to-${to}`,
+                data: {
+                    to,
+                    subject,
+                    content: content.replace('[Recipient Name]', name[index]),
+                },
+                opts: { priority: 1 },
+            }));
+
+            const emailJobs = await emailQueue.addBulk(jobs);
+
+
+            // jobs = await emailQueue.addBulk(
+            //     recipients.map(to => ({
+            //         name: `email-to-${to}`,
+            //         data: { to, subject, content: content.replace('[Recipient Name]', name[0]) },
+            //         opts: { priority: 1 }
+            //     }))
+            // );
+            return res.json({
+                success: true,
+                message: 'Job added to the queue',
+                jobIds: emailJobs.map(job => job.id),
+            });
         } else {
             const job = await emailQueue.add('single-email', {
                 to: recipients,
                 subject,
                 content
             });
-            jobs = [job];
+            return res.json({
+                success: true,
+                message: 'Job added to the queue',
+                jobIds: [job.id],
+            });
         }
 
-        return res.json({ success: true, message: 'Job added to the queue', jobIds: jobs.map(job => job.id) });
+        // return res.json({ success: true, message: 'Job added to the queue', jobIds: jobs.map(job => job.id) });
     } catch (error) {
         console.error('Error adding email job:', error);
         return res.json({ success: false, message: 'Error adding email job', error: error.message });
