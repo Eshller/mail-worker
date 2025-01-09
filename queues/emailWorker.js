@@ -52,6 +52,10 @@ const sendEmail = async (to, subject, content, html) => {
 
 const emailQueue = new Queue("emailQueue", {
     connection,
+    limiter: {
+        max: 10,
+        duration: 1000
+    },
     defaultJobOptions: {
         attempts: 3,
         backoff: {
@@ -64,39 +68,46 @@ const emailQueue = new Queue("emailQueue", {
 });
 
 // Worker setup outside of routes
+// Worker setup outside of routes
 const emailWorker = new Worker("emailQueue", async (job) => {
     console.log(`Processing job ${job.id}`);
-    const { recipients, subject, content } = job.data;
+    // console.log("Job Data: ", job.data);
+
+    const { to, subject, content } = job.data;
+
     const results = [];
     let processed = 0;
 
-    if (Array.isArray(recipients) && recipients.length > 0) {
-        for (const recipient of recipients) {
-            try {
-                console.log("Sending Email to ", recipient);
-                const info = await sendEmail(recipient, subject, content, content);
-                results.push({ to: recipient, success: true, info });
-                processed++;
-            } catch (error) {
-                console.error('Error sending email: ', error);
-                results.push({ to: recipient, success: false, error: error.message });
-            }
-        }
-        console.log('Bulk email results:', results);
-        return results;
-    } else {
+    // Ensure recipients is an array and is not empty
+    if (to) {
         try {
-            const info = await sendEmail(job.data.to, subject, content, content);
-            results.push({ to: job.data.to, success: true, info });
+            console.log("Sending Email to ", to);
+            const info = await sendEmail(to, subject, content, content);
+            results.push({ to: to, success: true, info });
+            processed++;
         } catch (error) {
             console.error('Error sending email: ', error);
-            results.push({ to: job.data.to, success: false, error: error.message });
-            throw error;
+            results.push({ to: to, success: false, error: error.message });
         }
+    } else {
+        // Log if recipients is not an array or is empty
+        console.error("Invalid recipients format or empty recipients list");
+        results.push({
+            success: false,
+            error: 'Invalid recipients format or empty recipients list'
+        });
     }
+
     console.log('Bulk email results:', results);
     return results;
-}, { connection, limiter: { max: 10, duration: 1000 }, concurrency: 10 });
+}, {
+    connection,
+    limiter: {
+        max: 10,
+        duration: 1000
+    },
+    concurrency: 10
+});
 
 // Error handling for worker
 emailWorker.on('failed', (job, err) => {
@@ -106,7 +117,6 @@ emailWorker.on('failed', (job, err) => {
 emailWorker.on('completed', (job, result) => {
     console.log(`Job ${job.id} completed:`, result);
 });
-
 console.log('Worker is running...');
 
 // API route to add jobs to the queue
@@ -125,54 +135,29 @@ app.post('/send-email', async (req, res) => {
         if (!subject || !content) {
             return res.status(400).json({ success: false, message: 'Subject and content are required' });
         }
-        // const jobs = recipients?.map((to) => ({
-        //     name: 'send-email',
-        //     data: { to, subject, content },
-        // }));
-        // const emailJob = await emailQueue.addBulk(jobs);
 
-        // console.log(content.replace('[Recipient Name]', name[0]));
-        // let jobs;
-        if (Array.isArray(recipients)) {
-            const jobs = recipients.map((to, index) => ({
-                name: `email-to-${to}`,
-                data: {
-                    to,
-                    subject,
-                    content: content.replace('[Recipient Name]', name[index]),
-                },
-                opts: { priority: 1 },
-            }));
-
-            const emailJobs = await emailQueue.addBulk(jobs);
-
-
-            // jobs = await emailQueue.addBulk(
-            //     recipients.map(to => ({
-            //         name: `email-to-${to}`,
-            //         data: { to, subject, content: content.replace('[Recipient Name]', name[0]) },
-            //         opts: { priority: 1 }
-            //     }))
-            // );
-            return res.json({
-                success: true,
-                message: 'Job added to the queue',
-                jobIds: emailJobs.map(job => job.id),
-            });
-        } else {
-            const job = await emailQueue.add('single-email', {
-                to: recipients,
-                subject,
-                content
-            });
-            return res.json({
-                success: true,
-                message: 'Job added to the queue',
-                jobIds: [job.id],
-            });
+        // Split recipients into batches of 10
+        const batches = [];
+        for (let i = 0; i < recipients.length; i += 10) {
+            batches.push(recipients.slice(i, i + 10));
         }
 
-        // return res.json({ success: true, message: 'Job added to the queue', jobIds: jobs.map(job => job.id) });
+        const jobs = batches.map((batch) => ({
+            name: 'send-email',
+            data: {
+                to: batch,
+                subject,
+                content,
+            },
+        }));
+
+        const emailJobs = await emailQueue.addBulk(jobs);
+
+        return res.json({
+            success: true,
+            message: 'Job added to the queue',
+            jobIds: emailJobs.map(job => job.id),
+        });
     } catch (error) {
         console.error('Error adding email job:', error);
         return res.json({ success: false, message: 'Error adding email job', error: error.message });
